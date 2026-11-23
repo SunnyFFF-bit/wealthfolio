@@ -350,6 +350,21 @@ impl ProjectionStoreTrait for ProjectionStore {
                     .map_err(StorageError::from)?;
                     let disposals = referentially_valid_disposals(conn, disposals, &account)?;
                     if !disposals.is_empty() {
+                        // A recalculated disposal can retain its deterministic ID
+                        // even when its stored date precedes the replay boundary.
+                        // Replace only re-emitted IDs belonging to this account;
+                        // preserve unrelated historical rows and keep strict inserts
+                        // so duplicate IDs within the new book still fail.
+                        for chunk in disposals.chunks(500) {
+                            let ids: Vec<&str> = chunk.iter().map(|row| row.id.as_str()).collect();
+                            diesel::delete(
+                                d::lot_disposals
+                                    .filter(d::account_id.eq(&account))
+                                    .filter(d::id.eq_any(ids)),
+                            )
+                            .execute(conn)
+                            .map_err(StorageError::from)?;
+                        }
                         diesel::insert_into(d::lot_disposals)
                             .values(&disposals)
                             .execute(conn)
@@ -1105,6 +1120,46 @@ mod tests {
             Some("2025-01-04"),
             "a write after the run read the marker keeps it"
         );
+    }
+
+    #[tokio::test]
+    async fn a_reemitted_disposal_replaces_its_stale_date() {
+        let db = setup();
+        let store = ProjectionStore::new(db.pool.clone(), db.writer.clone());
+        let lots = LotsRepository::new(db.pool.clone(), db.writer.clone());
+        let mut stale = disposal("d-moved");
+        stale.disposal_date = "2025-01-03".to_string();
+        let mut history = disposal("d-history");
+        history.disposal_date = "2025-01-02".to_string();
+        let book = |since, disposals| RunCompletion {
+            lot_books: vec![LotBook {
+                account_id: "acc1".to_string(),
+                since,
+                lots: vec![lot("lot-1")],
+                disposals,
+            }],
+            ..RunCompletion::default()
+        };
+        store
+            .complete_run(book(GENESIS, vec![stale, history]))
+            .await
+            .unwrap();
+        let corrected = disposal("d-moved");
+        store
+            .complete_run(book(date(4), vec![corrected.clone()]))
+            .await
+            .unwrap();
+        let stored = lots.get_lot_disposals_for_account("acc1").await.unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(
+            stored
+                .iter()
+                .find(|d| d.id == "d-moved")
+                .unwrap()
+                .disposal_date,
+            corrected.disposal_date
+        );
+        assert!(stored.iter().any(|d| d.id == "d-history"));
     }
 
     #[tokio::test]

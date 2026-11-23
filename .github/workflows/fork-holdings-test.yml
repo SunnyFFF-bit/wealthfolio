@@ -1,0 +1,53 @@
+name: Fork Holdings Test Image
+
+on:
+  push:
+    branches: ["fix/holdings-lot-disposals"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  arm64:
+    if: github.repository == 'SunnyFFF-bit/wealthfolio'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Connect build configuration
+        env:
+          CONNECT_AUTH_URL: ${{ vars.CONNECT_AUTH_URL }}
+          CONNECT_AUTH_PUBLISHABLE_KEY: ${{ vars.CONNECT_AUTH_PUBLISHABLE_KEY }}
+          CONNECT_STORAGE_ALLOWED_HOSTS: ${{ secrets.CONNECT_STORAGE_ALLOWED_HOSTS }}
+        run: python3 .github/scripts/check_connect_build.py --github-env
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ARM64 image
+        uses: docker/build-push-action@v5
+        env:
+          CONNECT_STORAGE_ALLOWED_HOSTS: ${{ secrets.CONNECT_STORAGE_ALLOWED_HOSTS }}
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          tags: wealthfolio-smoke:ci
+          secrets: |
+            connect-storage-hosts=${{ env.CONNECT_STORAGE_ALLOWED_HOSTS }}
+          build-args: |
+            CONNECT_AUTH_URL=${{ vars.CONNECT_AUTH_URL }}
+            CONNECT_AUTH_PUBLISHABLE_KEY=${{ vars.CONNECT_AUTH_PUBLISHABLE_KEY }}
+            CONNECT_API_URL=${{ vars.CONNECT_API_URL }}
+      - name: Test encryption in the built image
+        run: python3 .github/scripts/encryption_smoke.py --image wealthfolio-smoke:ci
+      - name: Log into GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish test image
+        run: |
+          image="ghcr.io/sunnyfff-bit/wealthfolio:holdings-test-arm64-${GITHUB_SHA}"
+          docker tag wealthfolio-smoke:ci "$image"
+          docker push "$image"
