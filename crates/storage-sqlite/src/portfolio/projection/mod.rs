@@ -1152,7 +1152,11 @@ mod tests {
         let stored = lots.get_lot_disposals_for_account("acc1").await.unwrap();
         assert_eq!(stored.len(), 2);
         assert_eq!(
-            stored.iter().find(|d| d.id == "d-moved").unwrap().disposal_date,
+            stored
+                .iter()
+                .find(|d| d.id == "d-moved")
+                .unwrap()
+                .disposal_date,
             corrected.disposal_date
         );
         assert!(stored.iter().any(|d| d.id == "d-history"));
